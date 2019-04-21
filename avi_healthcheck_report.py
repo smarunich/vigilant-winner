@@ -240,7 +240,7 @@ class Avi(object):
         writer.save()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser("./avi_healthcheck_report.py --dir . --cloud 'Fabric UK OAT'")
+    parser = argparse.ArgumentParser("./avi_healthcheck_report.py --dir . --cloud 'OCP'")
     parser.add_argument('--dir', type=str, action='store',
     default='')
     parser.add_argument('--cloud', type=str, action='store',
