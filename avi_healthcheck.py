@@ -86,8 +86,10 @@ class Avi(object):
         r = self._get('/api/alert')
 
     def backup(self):
-        r = self._get('/api/configuration/export', params={'full_system': True})
+        self.session.headers.update({'X-Avi-Tenant': 'admin'})
+        r = self._post('/api/configuration/export', params={'full_system': True}, data={'passphrase': self.password})
         self.export = r.json()
+        self.session.headers.update({'X-Avi-Tenant': self.tenant})
 
     def login(self):
         login_data = {'username': self.username, 'password': self.password}
@@ -144,6 +146,9 @@ class Avi(object):
         return self._request('get', url, params=params)
 
     def _post(self, uri, params=None, data=None):
+        if 'login' not in uri:
+            self.session.headers.update({'X-CSRFToken': self.session.cookies['csrftoken']})
+            self.session.headers.update({'Referer': self.base_url + '/' })
         url = self._url(uri)
         return self._request('post', url, params=params, data=data)
 
