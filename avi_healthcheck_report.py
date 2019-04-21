@@ -233,7 +233,6 @@ class Avi(object):
         pd_report = json_normalize(report)
         df = pd.DataFrame(pd_report).transpose()
         df.to_excel(writer, sheet_name='Main')
-        workbook = writer.book
         worksheet = writer.sheets['Main']
         worksheet.set_row(0, None, None, {'hidden': True})
         worksheet.set_column('A:B', 40)

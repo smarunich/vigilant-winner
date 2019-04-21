@@ -34,6 +34,7 @@ class Avi(object):
         self.backup()
         self.alerts()
         self.vs_inventory()
+        self.network_inventory()
         self.dns_metrics()
         self.cl_list = self._cluster_runtime()
         self.cc_list = self._ocp_connectors()
@@ -81,6 +82,9 @@ class Avi(object):
 
     def vs_inventory(self):
         r = self._get('/api/virtualservice-inventory', params={'include_name': True})
+
+    def network_inventory(self)
+        r = self._get('/api/network-inventory', params={'include_name': True})
 
     def alerts(self):
         r = self._get('/api/alert')
