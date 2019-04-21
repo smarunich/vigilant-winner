@@ -3,7 +3,9 @@ import json
 import re
 import argparse
 import datetime
-import pandas
+import pandas as pd
+from collections import OrderedDict
+from pandas.io.json import json_normalize
 
 class K8s():
     def __init__(self, file_path):
@@ -27,19 +29,17 @@ class Avi(object):
             self.cluster_runtime = json.load(file_name)
         with open(file_path + '/api-alert.json') as file_name:
             self.alerts = json.load(file_name)['results']
-        report = json.dumps({
-            'total_objs': self.total_objs(),
-            'cloud': self.cloud_oshiftk8s(),
-            'se_groups': self.se_groups(),
-            'se_vs_distribution': self.se_vs_distribution(),
-            'dns_vs_state': self.dns_vs_state(),
-            'cluster_state': self.cluster_state(),
-            'backup_to_remote_host': self.backup_to_remote_host(),
-            'alerts': self.alerts,
-            'lingering_tenants': self.find_lingering_tenants(),
-        }, indent=2, sort_keys=False)
-        print report
-        report_name = 'avi_ocp_health_report-' + \
+        report = OrderedDict()
+        report.update({'total_objs': self.total_objs()})
+        report.update({'cloud': self.cloud_oshiftk8s()})
+        report.update({'se_groups': self.se_groups()})
+        report.update({'se_vs_distribution': self.se_vs_distribution()})
+        report.update({'dns_vs_state': self.dns_vs_state()})
+        report.update({'cluster_state': self.cluster_state()})
+        report.update({'backup_to_remote_host': self.backup_to_remote_host()})
+        report.update({'alerts': self.alerts})
+        report.update({'lingering_tenants': self.find_lingering_tenants()})
+        report_name = 'avi_healthcheck_report_' + self.cloud + '_' + \
             datetime.datetime.now().strftime("%Y%m%d-%H%M%S" + ".xlsx")
         self.write_report(report_name, report)
     ''' lookup name from obj ref '''
@@ -49,7 +49,7 @@ class Avi(object):
         return obj_name
     ''' total objs for provided cloud '''
     def total_objs(self):
-        total_objs = {}
+        total_objs = OrderedDict()
         total_objs['VsVip_EW'] = 0
         total_objs['VsVip_NS'] = 0
         for obj_type in self.config.keys():
@@ -70,7 +70,7 @@ class Avi(object):
         return total_objs
     ''' ['Cloud']['oshiftk8s_configuration'] '''
     def cloud_oshiftk8s(self):
-        oshiftk8s_configuration = {}
+        oshiftk8s_configuration = OrderedDict()
         for cloud_obj in self.config['Cloud']:
             if re.search(self.cloud, cloud_obj['name']):
                 oshiftk8s_configuration = {
@@ -86,6 +86,8 @@ class Avi(object):
                         cloud_obj['oshiftk8s_configuration']['use_controller_image'],
                     'docker_registry_se':
                         cloud_obj['oshiftk8s_configuration']['docker_registry_se'],
+                    'shared_virtualservice_namespace':
+                        cloud_obj['oshiftk8s_configuration']['shared_virtualservice_namespace']
                     }
                 try:
                     oshiftk8s_configuration['se_include_attributes'] = \
@@ -131,7 +133,7 @@ class Avi(object):
         return oshiftk8s_configuration
     ''' se_groups configuration '''
     def se_groups(self):
-        se_groups_configuration = {}
+        se_groups_configuration = OrderedDict()
         for se_group_obj in self.config['ServiceEngineGroup']:
             if re.search(self.cloud, se_group_obj['cloud_ref']):
                 se_groups_configuration[se_group_obj['name']] = {
@@ -173,7 +175,7 @@ class Avi(object):
         return se_groups_configuration
     ''' se inventory analysis '''
     def se_vs_distribution(self):
-        se_vs_distribution = {}
+        se_vs_distribution = OrderedDict()
         for se in self.se_inventory['results']:
             if re.search(self.cloud, se['config']['cloud_ref']):
                 se_vs_distribution[se['config']['name']] = {
@@ -198,14 +200,15 @@ class Avi(object):
         for vs in self.config['VirtualService']:
             if re.search(url, vs['url']):
                 # UDF
-                dns_vs = {
+                dns_vs = OrderedDict()
+                dns_vs.update({
                 'udf_log': {
                     'udf_log_throttle': vs['analytics_policy']['udf_log_throttle'],
                     'enabled': vs['analytics_policy']['enabled']
                     },
                 # Non-Significant  Logs
                 'non_significant_logs_enabled': vs['analytics_policy']['full_client_logs']['enabled']
-                }
+                })
                 # Real-Time Metrics
                 try:
                     dns_vs['realtime_metrics_enabled'] = vs['analytics_policy']['metrics_realtime_update']['enabled']
@@ -226,9 +229,14 @@ class Avi(object):
         return lingering_tenants
 
     def write_report(self, name, report):
-        writer = pandas.ExcelWriter(name, engine='xlsxwriter')
-        df = pandas.DataFrame(report)
-        df.to_excel(writer)
+        writer = pd.ExcelWriter(name, engine='xlsxwriter')
+        pd_report = json_normalize(report)
+        df = pd.DataFrame(pd_report).transpose()
+        df.to_excel(writer, sheet_name='Main')
+        workbook = writer.book
+        worksheet = writer.sheets['Main']
+        worksheet.set_row(0, None, None, {'hidden': True})
+        worksheet.set_column('A:B', 40)
         writer.save()
 
 if __name__ == "__main__":
