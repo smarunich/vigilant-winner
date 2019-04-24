@@ -11,9 +11,9 @@ class K8s():
     def __init__(self, file_path):
         with open(file_path + '/k8s-list_project.json') as file_name:
             self.k8s_projects = json.load(file_name)
-        #with open(file_path + '*.ssh.json') as file_name:
-        #    self.ssh_commands = json.load(file_name)
-        #print self.ssh_commands
+        with open(file_path + '*.ssh.json') as file_name:
+            self.ssh_commands = json.load(file_name)
+        print self.ssh_commands
     def projects_list(self):
         projects_list = []
         for project in self.k8s_projects['items']:
@@ -22,27 +22,27 @@ class K8s():
 
 
 class Avi(object):
-    def __init__(self, file_path, cloud, k8s):
+    def __init__(self, file_path, cloud):
         self.cloud = cloud
-        self.k8s = k8s
+        #self.k8s = k8s
         with open(file_path + '/api-configuration-export.json') as file_name:
             self.config = json.load(file_name)
-        with open(file_path + '/api-serviceengine-inventory.json') as file_name:
-            self.se_inventory= json.load(file_name)
-        with open(file_path + '/api-cluster-runtime.json') as file_name:
-            self.cluster_runtime = json.load(file_name)
-        with open(file_path + '/api-alert.json') as file_name:
-            self.alerts = json.load(file_name)['results']
+        #with open(file_path + '/api-serviceengine-inventory.json') as file_name:
+        #    self.se_inventory= json.load(file_name)
+        #with open(file_path + '/api-cluster-runtime.json') as file_name:
+        #    self.cluster_runtime = json.load(file_name)
+        #with open(file_path + '/api-alert.json') as file_name:
+        #    self.alerts = json.load(file_name)['results']
         report = OrderedDict()
         report.update({'total_objs': self.total_objs()})
-        report.update({'cloud': self.cloud_oshiftk8s()})
+        #report.update({'cloud': self.cloud_oshiftk8s()})
         report.update({'se_groups': self.se_groups()})
-        report.update({'se_vs_distribution': self.se_vs_distribution()})
-        report.update({'dns_vs_state': self.dns_vs_state()})
-        report.update({'cluster_state': self.cluster_state()})
+        #report.update({'se_vs_distribution': self.se_vs_distribution()})
+        #report.update({'dns_vs_state': self.dns_vs_state()})
+        #report.update({'cluster_state': self.cluster_state()})
         report.update({'backup_to_remote_host': self.backup_to_remote_host()})
-        report.update({'alerts': self.alerts})
-        report.update({'lingering_tenants': self.find_lingering_tenants()})
+        #report.update({'alerts': self.alerts})
+        #report.update({'lingering_tenants': self.find_lingering_tenants()})
         report_name = 'avi_healthcheck_report_' + self.cloud + '_' + \
             datetime.datetime.now().strftime("%Y%m%d-%H%M%S" + ".xlsx")
         self.write_report(report_name, report)
@@ -249,5 +249,6 @@ if __name__ == "__main__":
     parser.add_argument('--cloud', type=str, action='store',
                         default='')
     args = parser.parse_args()
-    avi = Avi(file_path=args.dir, cloud=args.cloud,
-              k8s=K8s(file_path=args.dir))
+    avi = Avi(file_path=args.dir, cloud=args.cloud)
+    #avi = Avi(file_path=args.dir, cloud=args.cloud,
+    #          k8s=K8s(file_path=args.dir))
