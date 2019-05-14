@@ -4,15 +4,27 @@ import re
 import json
 import paramiko
 import kubernetes.client
+from kubernetes.client.rest import ApiException
 import openshift.client
 import argparse
 import StringIO
+import tarfile
+import datetime
 import requests.packages.urllib3
 requests.packages.urllib3.disable_warnings()
 
+from avi.util.ssl_utils import encrypt_string, decrypt_string
+import os
+import sys
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append('/opt/avi/python/bin/portal')
+os.environ["DJANGO_SETTINGS_MODULE"] = "portal.settings_full"
+#import httplib as http_client
+#http_client.HTTPConnection.debuglevel = 1
 
 class Avi(object):
-    def __init__(self, host='127.0.0.1', username='admin', password=None, verify=False, out_dir=None, tenant='*', avi_api_version='17.2.10'):
+    def __init__(self, host='127.0.0.1', username='admin', password=None, verify=False, output_dir=None, tenant='*', avi_api_version='17.2.14'):
         if password == None:
             raise Exception('Avi authentication account password not provided')
         self.export = None
@@ -23,7 +35,9 @@ class Avi(object):
         self.host = host
         self.username = username
         self.password = password
-        self.out_dir = out_dir
+        self.output_dir = output_dir
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         self.base_url = 'https://' + host
         self.session = requests.session()
         self.session.verify = verify
@@ -33,23 +47,40 @@ class Avi(object):
         self.login()
         self.backup()
         self.alerts()
+        self.events()
         self.vs_inventory()
         self.network_inventory()
         self.dns_metrics()
+        self.check_key_passphrase(self.export, self.password)
+
         self.cl_list = self._cluster_runtime()
         self.cc_list = self._ocp_connectors()
 
         for c in self.cc_list:
-            self.k8s.append(K8s(k8s_cloud=c))
+            self.k8s.append(K8s(k8s_cloud=c, private_key=self.private_key, output_dir=self.output_dir))
+            internals = self._get('/api/cloud/' + c['uuid'] + '/internals').json()
             for se_ip in self._se_local_addresses(cloud_uuid=c['uuid']):
-                internals = self._get('/api/cloud/' + c['uuid'] + '/internals').json()
-                for node in internals['agents'][0]['oshift_k8s']['hosts']:
-                    user = self._find_cc_user(cloud=c)
-                    self.node_connections.append(K8sNode(node['host_ip'], controllers=self.cl_list, **user))
-                self.se_connections.append(AviSE(se_ip, password=self.password, controllers=self.cl_list))
+                if internals['agents'][0]['oshift_k8s']['cfg']['se_deployment_method'] == 'SE_CREATE_SSH':
+                    for node in internals['agents'][0]['oshift_k8s']['hosts']:
+                        user = self._find_cc_user(cloud=c)
+                        self.node_connections.append(K8sNode(node['host_ip'], controllers=self.cl_list, output_dir=self.output_dir, **user))
+                self.se_connections.append(AviSE(se_ip, password=self.password, controllers=self.cl_list, output_dir=self.output_dir))
 
         for c_ip in self.cl_list:
-            self.ctrl_connections.append(AviController(c_ip, password=self.password, controllers=self.cl_list))
+            self.ctrl_connections.append(AviController(c_ip, password=self.password, controllers=self.cl_list,output_dir=self.output_dir))
+
+    def check_key_passphrase(self,config, passphrase):
+        from django.contrib.auth.hashers import PBKDF2PasswordHasher as pbkdf2
+        salt = config.get('META',{}).get('salt', None)
+        hasher = pbkdf2()
+        _, _, _, key = hasher.encode(passphrase, salt, iterations=100000).split('$', 3)
+        try:
+            decrypt_string(config.get('META',{}).get('test_string'), key)
+        except:
+            print 'Invalid passphrase'
+            sys.exit(1)
+        self.private_key = key
+        return key
 
     def dns_metrics(self):
         self._get_dns_vs()
@@ -81,13 +112,16 @@ class Avi(object):
         self._get(path, params=params)
 
     def vs_inventory(self):
-        r = self._get('/api/virtualservice-inventory', params={'include_name': True})
+        r = self._get('/api/virtualservice-inventory', params={'include_name': True, 'page_size': '1'})
 
-    def network_inventory(self)
+    def network_inventory(self):
         r = self._get('/api/network-inventory', params={'include_name': True})
 
     def alerts(self):
         r = self._get('/api/alert')
+
+    def events(self):
+        r = self._get('/api/analytics/logs/', params={'include_name': True, 'type': '2', 'duration': '604800', 'page_size': '5000' })
 
     def backup(self):
         self.session.headers.update({'X-Avi-Tenant': 'admin'})
@@ -128,7 +162,7 @@ class Avi(object):
 
     def _se_local_addresses(self, cloud_uuid=None):
         se_list = []
-        inventory = self._get('/api/serviceengine-inventory', params={'include_name': True})
+        inventory = self._get('/api/serviceengine-inventory', params={'include_name': True, 'page_size': '200'})
         securechannel = self._get('/api/securechannel')
         for sc in securechannel.json()['results']:
             for se in inventory.json()['results']:
@@ -161,7 +195,7 @@ class Avi(object):
 
     def _write(self, path, data):
         try:
-            with open(path, 'w') as fh:
+            with open(self.output_dir + '/' + path, 'w') as fh:
                 json.dump(data, fh)
         except Exception as e:
             print e.message
@@ -169,6 +203,7 @@ class Avi(object):
     def _request(self, method, url, params=None, data=None):
         _method = getattr(self.session, method)
         r = _method(url, params=params, data=data)
+        print 'HTTP_REQUEST',r.status_code, method, url, params
         try:
             r.raise_for_status()
         except Exception as e:
@@ -176,8 +211,15 @@ class Avi(object):
             return None
         try:
             data = r.json()
+            page = 2
+            while 'next' in r.json().keys():
+              params['page'] = str(page)
+              r = _method(url, params=params, data=data)
+              print 'HTTP_REQUEST',r.status_code, method, url, params
+              print r.json()
+              page += 1
             m = re.match(self.base_url + '/(.*)', url)
-            path = m.group(1).replace('/', '-') + '.json'
+            path = m.group(1).replace('/', '-') + '-avi_healthcheck.json'
             # TODO Enable write below
             self._write(path, data)
         except ValueError:
@@ -186,7 +228,8 @@ class Avi(object):
 
 
 class SSH_Base(object):
-    def __init__(self, port=22, username=None, password=None, pem=None):
+    def __init__(self, port=22, username=None, password=None, pem=None, output_dir=None):
+        self.output_dir = output_dir
         if pem is not None:
             self._pem = StringIO.StringIO(pem)
             self._pem = paramiko.RSAKey.from_private_key(self._pem)
@@ -199,11 +242,13 @@ class SSH_Base(object):
         self.username = username
         self.password = password
 
+
+
     def run_commands(self):
         response_list = []
         for cmd in self._cmd_list:
             response_list.append(self._run_cmd(cmd, sudo=True))
-        with open(self.local_ip + '.ssh.json', 'w') as fh:
+        with open(self.output_dir + '/' + self.local_ip + '.ssh-avi_healthcheck.json', 'w') as fh:
             json.dump(response_list, fh)
         return response_list
 
@@ -246,10 +291,11 @@ class SSH_Base(object):
 
 
 class AviController(SSH_Base):
-    def __init__(self, local_ip, port=22, username='admin', password=None, controllers=None):
+    def __init__(self, local_ip, port=22, username='admin', password=None, controllers=None, output_dir=None):
         # TODO
         # Port: 5098 when running controller in a container
         super(AviController, self).__init__(port=port, username=username, password=password)
+        self.output_dir = output_dir
         self.local_ip = local_ip
         self.controllers = controllers
         self._cmd_list = ['hostname',
@@ -274,14 +320,15 @@ class AviController(SSH_Base):
         for ip in self.controllers:
             if ip is not self.local_ip:
                 ctrl_list.append(self._run_cmd('ping -c5 %s' % ip))
-        with open(self.local_ip + '.ping.json', 'w') as fh:
+        with open(self.output_dir + '/' +self.local_ip + '.ping-avi_healthcheck.json', 'w') as fh:
             json.dump(ctrl_list, fh)
         return ctrl_list
 
 
 class AviSE(SSH_Base):
-    def __init__(self, local_ip, port=5097, username='admin', password=None, controllers=None):
+    def __init__(self, local_ip, port=5097, username='admin', password=None, controllers=None, output_dir=None):
         super(AviSE, self).__init__(port=port, username=username, password=password)
+        self.output_dir = output_dir
         self.local_ip = local_ip
         self.controllers = controllers
         self._cmd_list = ['hostname',
@@ -310,14 +357,15 @@ class AviSE(SSH_Base):
         ctrl_list = []
         for ip in self.controllers:
             ctrl_list.append(self._run_cmd('ping -c5 %s' % ip))
-        with open(self.local_ip + '.ping.json', 'w') as fh:
+        with open(self.output_dir + '/' + self.local_ip + '.ping-avi_healthcheck.json', 'w') as fh:
             json.dump(ctrl_list, fh)
         return ctrl_list
 
 
 class K8sNode(SSH_Base):
-    def __init__(self, local_ip, port=22, username=None, password=None, pem=None, controllers=None):
-        super(K8sNode, self).__init__(port=port, username=username, password=password, pem=pem)
+    def __init__(self, local_ip, port=22, username=None, password=None, pem=None, controllers=None, output_dir=None):
+        super(K8sNode, self).__init__(port=port, username=username, password=password, pem=pem, output_dir=output_dir)
+        self.output_dir = output_dir
         self.local_ip = local_ip
         self.controllers = controllers
         self._cmd_list = ['hostname',
@@ -345,43 +393,49 @@ class K8sNode(SSH_Base):
         ctrl_list = []
         for ip in self.controllers:
             ctrl_list.append(self._run_cmd('ping -c5 %s' % ip))
-        with open(self.local_ip + '.ping.json', 'w') as fh:
+        with open(self.output_dir + '/' + self.local_ip + '.ping-avi_healthcheck.json', 'w') as fh:
             json.dump(ctrl_list, fh)
         return ctrl_list
 
 
 class K8s(object):
-    def __init__(self, k8s_cloud=None):
+    def __init__(self, k8s_cloud=None, private_key=None, output_dir=None):
+        self.output_dir = output_dir
+        if 'str' and 'iv' in k8s_cloud['oshiftk8s_configuration']['service_account_token']:
+            authorization_token = decrypt_string(k8s_cloud['oshiftk8s_configuration']['service_account_token'],private_key)
+        else:
+            authorization_token = k8s_cloud['oshiftk8s_configuration']['service_account_token']
         self._kauth = kubernetes.client.Configuration()
         self._kauth.host = 'https://' + k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
         self._kauth.verify_ssl = False
-        self._kauth.api_key['authorization'] = k8s_cloud['oshiftk8s_configuration']['service_account_token']
+        self._kauth.api_key['authorization'] = authorization_token
         self._kauth.api_key_prefix['authorization'] = 'Bearer'
 
         self._oauth = kubernetes.client.Configuration()
         self._oauth.host = 'https://' + k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
         self._oauth.verify_ssl = False
-        self._oauth.api_key['authorization'] = k8s_cloud['oshiftk8s_configuration']['service_account_token']
+        self._oauth.api_key['authorization'] = authorization_token
         self._oauth.api_key_prefix['authorization'] = 'Bearer'
 
         self.v1Api = kubernetes.client.CoreV1Api(kubernetes.client.ApiClient(self._kauth))
         self.nodes = self._k8s_api(self.v1Api, 'list_node')
         self.services = self._k8s_api(self.v1Api, 'list_service_for_all_namespaces')
-        self.serviceaccounts = self._k8s_api(self.v1Api, 'list_serviceaccount')
+        self.serviceaccounts = self._k8s_api(self.v1Api, 'list_service_account_for_all_namespaces')
 
         self.oapi = openshift.client.OapiApi(openshift.client.ApiClient(self._oauth))
         self.projects = self._k8s_api(self.oapi, 'list_project')
 
     def _k8s_api(self, api, cmd):
         try:
+            print api, cmd
             response = getattr(api, cmd)()
             flat = kubernetes.client.ApiClient().sanitize_for_serialization(response)
-            with open('k8s-' + cmd + '.json', 'w') as fh:
+            with open(self.output_dir + '/' + 'k8s-' + cmd + '-avi_healthcheck.json', 'w') as fh:
                 json.dump(flat, fh)
             return response
-        except Exception as e:
+        except ApiException as e:
             print 'K8s exception with %s' % cmd
-            print e.message
+            print e
 
 
 if __name__ == '__main__':
@@ -389,12 +443,21 @@ if __name__ == '__main__':
     parser.add_argument('--controller', type=str, default='127.0.0.1')
     parser.add_argument('--username', type=str, default='admin')
     parser.add_argument('--password', type=str, default=None)
-    parser.add_argument('--output', type=str, default='')
-    parser.add_argument('--api-version', type=str, default='17.2.10')
-    parser.add_argument('--tenant', type=str, default='*')
-    parser.add_argument('--infra_label', type=str, default='region=infra')
+    parser.add_argument('--output', type=str, default=None, help='Output directory')
+    parser.add_argument('--api-version', type=str, default='17.2.14', help='X-Avi-Version' )
+    parser.add_argument('--tenant', type=str, default='*', help='X-Avi-Tenant')
     parser.add_argument('--secure_channel_port', type=int, default=5097)
     args = parser.parse_args()
 
     avi = Avi(host=args.controller, username=args.username, password=args.password,
-              out_dir=args.output, tenant=args.tenant, avi_api_version=args.api_version)
+              output_dir=args.output, tenant=args.tenant, avi_api_version=args.api_version)
+
+    archive_name = args.output + '/' + args.controller + '-avi_healthcheck-' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + '.tar.gz'
+
+    with tarfile.open(archive_name, mode='w:gz') as archive:
+      for root, dirs, files in os.walk(args.output):
+          for file in files:
+            if 'avi_healthcheck.json' in file:
+                archive.add(os.path.join(root, file))
+                os.remove(os.path.join(root, file))
+    os.chmod(archive_name, 0755)

@@ -9,9 +9,9 @@ from pandas.io.json import json_normalize
 
 class K8s():
     def __init__(self, file_path):
-        with open(file_path + '/k8s-list_project.json') as file_name:
+        with open(file_path + '/k8s-list_project-avi_healthcheck.json') as file_name:
             self.k8s_projects = json.load(file_name)
-        #with open(file_path + '*.ssh.json') as file_name:
+        #with open(file_path + '*.ssh-avi_healthcheck.json') as file_name:
         #    self.ssh_commands = json.load(file_name)
         #print self.ssh_commands
     def projects_list(self):
@@ -25,13 +25,13 @@ class Avi(object):
     def __init__(self, file_path, cloud, k8s):
         self.cloud = cloud
         self.k8s = k8s
-        with open(file_path + '/api-configuration-export.json') as file_name:
+        with open(file_path + '/api-configuration-export-avi_healthcheck.json') as file_name:
             self.config = json.load(file_name)
-        with open(file_path + '/api-serviceengine-inventory.json') as file_name:
+        with open(file_path + '/api-serviceengine-inventory-avi_healthcheck.json') as file_name:
             self.se_inventory= json.load(file_name)
-        with open(file_path + '/api-cluster-runtime.json') as file_name:
+        with open(file_path + '/api-cluster-runtime-avi_healthcheck.json') as file_name:
             self.cluster_runtime = json.load(file_name)
-        with open(file_path + '/api-alert.json') as file_name:
+        with open(file_path + '/api-alert-avi_healthcheck.json') as file_name:
             self.alerts = json.load(file_name)['results']
         report = OrderedDict()
         report.update({'total_objs': self.total_objs()})
@@ -115,12 +115,15 @@ class Avi(object):
                     cloud_obj['dns_provider_ref'])
                 # needs https://10.57.0.40/api/network-inventory for stats
                 for provider_obj in self.config['IpamDnsProviderProfile']:
-                    if ew_ipam_provider_name == provider_obj['name']:
-                        for network in provider_obj['internal_profile']['usable_network_refs']:
-                            network_uuid = network.split('/')[3]
-                            for network_obj in self.config['Network']:
-                                if network_uuid == network_obj['uuid']:
-                                    oshiftk8s_configuration['ew_configured_subnets'].append(network_obj['configured_subnets'])
+                    try: 
+                      if ew_ipam_provider_name == provider_obj['name']:
+                          for network in provider_obj['internal_profile']['usable_network_refs']:
+                              network_uuid = network.split('/')[3]
+                              for network_obj in self.config['Network']:
+                                  if network_uuid == network_obj['uuid']:
+                                      oshiftk8s_configuration['ew_configured_subnets'].append(network_obj['configured_subnets'])
+                    except:
+                      pass
                     if ns_ipam_provider_name == provider_obj['name']:
                         for network in provider_obj['internal_profile']['usable_network_refs']:
                             network_uuid = network.split('/')[3]
