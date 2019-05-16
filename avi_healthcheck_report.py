@@ -25,13 +25,13 @@ class Avi(object):
     def __init__(self, file_path, cloud, k8s):
         self.cloud = cloud
         self.k8s = k8s
-        with open(file_path + '/api-configuration-export-avi_healthcheck.json') as file_name:
+        with open(file_path + '/configuration-export-avi_healthcheck.json') as file_name:
             self.config = json.load(file_name)
-        with open(file_path + '/api-serviceengine-inventory-avi_healthcheck.json') as file_name:
+        with open(file_path + '/serviceengine-inventory-avi_healthcheck.json') as file_name:
             self.se_inventory= json.load(file_name)
-        with open(file_path + '/api-cluster-runtime-avi_healthcheck.json') as file_name:
+        with open(file_path + '/cluster-runtime-avi_healthcheck.json') as file_name:
             self.cluster_runtime = json.load(file_name)
-        with open(file_path + '/api-alert-avi_healthcheck.json') as file_name:
+        with open(file_path + '/alert-avi_healthcheck.json') as file_name:
             self.alerts = json.load(file_name)['results']
         report = OrderedDict()
         report.update({'total_objs': self.total_objs()})
@@ -103,11 +103,14 @@ class Avi(object):
                         cloud_obj['oshiftk8s_configuration']['se_exclude_attributes']
                 except:
                     pass
-                ew_ipam_provider_name = self._lookup_name_from_obj_ref(
-                    cloud_obj['east_west_ipam_provider_ref'])
-                oshiftk8s_configuration['ew_configured_subnets'] = []
-                ew_dns_provider_name = self._lookup_name_from_obj_ref(
-                    cloud_obj['east_west_dns_provider_ref'])
+                try:
+                    ew_ipam_provider_name = self._lookup_name_from_obj_ref(
+                      cloud_obj['east_west_ipam_provider_ref'])
+                    oshiftk8s_configuration['ew_configured_subnets'] = []
+                    ew_dns_provider_name = self._lookup_name_from_obj_ref(
+                      cloud_obj['east_west_dns_provider_ref'])
+                except:
+                  pass
                 ns_ipam_provider_name = self._lookup_name_from_obj_ref(
                     cloud_obj['ipam_provider_ref'])
                 oshiftk8s_configuration['nw_configured_subnets'] = []
@@ -115,7 +118,7 @@ class Avi(object):
                     cloud_obj['dns_provider_ref'])
                 # needs https://10.57.0.40/api/network-inventory for stats
                 for provider_obj in self.config['IpamDnsProviderProfile']:
-                    try: 
+                    try:
                       if ew_ipam_provider_name == provider_obj['name']:
                           for network in provider_obj['internal_profile']['usable_network_refs']:
                               network_uuid = network.split('/')[3]
@@ -125,18 +128,18 @@ class Avi(object):
                     except:
                       pass
                     if ns_ipam_provider_name == provider_obj['name']:
-                        for network in provider_obj['internal_profile']['usable_network_refs']:
-                            network_uuid = network.split('/')[3]
-                            for network_obj in self.config['Network']:
-                                if network_uuid == network_obj['uuid']:
-                                    oshiftk8s_configuration['nw_configured_subnets'].append(network_obj['configured_subnets'])
-                    # There is API support for multiple dns service domains
-                    if ew_dns_provider_name == provider_obj['name']:
-                        oshiftk8s_configuration['ew_configured_domain'] = \
-                    provider_obj['internal_profile']['dns_service_domain'][0]['domain_name']
-                    if ns_dns_provider_name == provider_obj['name']:
-                        oshiftk8s_configuration['ns_configured_domain'] = \
-                    provider_obj['internal_profile']['dns_service_domain'][0]['domain_name']
+                        if 'internal_profile' in provider_obj.keys():
+                            for network in provider_obj['internal_profile']['usable_network_refs']:
+                                network_uuid = network.split('/')[3]
+                                for network_obj in self.config['Network']:
+                                    if network_uuid == network_obj['uuid']:
+                                        oshiftk8s_configuration['nw_configured_subnets'].append(network_obj['configured_subnets'])
+                            if ew_dns_provider_name == provider_obj['name']:
+                                oshiftk8s_configuration['ew_configured_domain'] = \
+                            provider_obj['internal_profile']['dns_service_domain'][0]['domain_name']
+                            if ns_dns_provider_name == provider_obj['name']:
+                                oshiftk8s_configuration['ns_configured_domain'] = \
+                            provider_obj['internal_profile']['dns_service_domain'][0]['domain_name']
         return oshiftk8s_configuration
     ''' se_groups configuration '''
     def se_groups(self):
@@ -208,14 +211,15 @@ class Avi(object):
             if re.search(url, vs['url']):
                 # UDF
                 dns_vs = OrderedDict()
-                dns_vs.update({
-                'udf_log': {
-                    'udf_log_throttle': vs['analytics_policy']['udf_log_throttle'],
-                    'enabled': vs['analytics_policy']['enabled']
-                    },
-                # Non-Significant  Logs
-                'non_significant_logs_enabled': vs['analytics_policy']['full_client_logs']['enabled']
-                })
+                if 'analytics_policy' in vs.keys():
+                    dns_vs.update({
+                    'udf_log': {
+                        'udf_log_throttle': vs['analytics_policy']['udf_log_throttle'],
+                        'enabled': vs['analytics_policy']['enabled']
+                        },
+                    # Non-Significant  Logs
+                    'non_significant_logs_enabled': vs['analytics_policy']['full_client_logs']['enabled']
+                    })
                 # Real-Time Metrics
                 try:
                     dns_vs['realtime_metrics_enabled'] = vs['analytics_policy']['metrics_realtime_update']['enabled']

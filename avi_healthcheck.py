@@ -2,6 +2,8 @@
 import requests
 import re
 import json
+from itertools import chain
+from avi.sdk.avi_api import ApiSession
 import paramiko
 import kubernetes.client
 from kubernetes.client.rest import ApiException
@@ -24,7 +26,7 @@ os.environ["DJANGO_SETTINGS_MODULE"] = "portal.settings_full"
 #http_client.HTTPConnection.debuglevel = 1
 
 class Avi(object):
-    def __init__(self, host='127.0.0.1', username='admin', password=None, verify=False, output_dir=None, tenant='*', avi_api_version='17.2.14'):
+    def __init__(self, host='127.0.0.1', username='admin', password=None, verify=False, output_dir=None, tenant='*', avi_api_version='17.2.14',timeout=300):
         if password == None:
             raise Exception('Avi authentication account password not provided')
         self.export = None
@@ -39,12 +41,13 @@ class Avi(object):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         self.base_url = 'https://' + host
-        self.session = requests.session()
-        self.session.verify = verify
         self.avi_api_version = avi_api_version
         self.tenant = tenant
+        self.timeout = timeout
 
-        self.login()
+        #self.login()
+        self.api = ApiSession.get_session(controller_ip = self.host, username=self.username, password=self.password, tenant=self.tenant, api_version=self.avi_api_version, timeout=self.timeout)
+
         self.backup()
         self.alerts()
         self.events()
@@ -58,7 +61,7 @@ class Avi(object):
 
         for c in self.cc_list:
             self.k8s.append(K8s(k8s_cloud=c, private_key=self.private_key, output_dir=self.output_dir))
-            internals = self._get('/api/cloud/' + c['uuid'] + '/internals').json()
+            internals = self._get('cloud/' + c['uuid'] + '/internals')
             for se_ip in self._se_local_addresses(cloud_uuid=c['uuid']):
                 if internals['agents'][0]['oshift_k8s']['cfg']['se_deployment_method'] == 'SE_CREATE_SSH':
                     for node in internals['agents'][0]['oshift_k8s']['hosts']:
@@ -85,7 +88,7 @@ class Avi(object):
     def dns_metrics(self):
         self._get_dns_vs()
         uuid = self._dns_vs['uuid']
-        path = '/api/analytics/metrics/virtualservice/' + uuid
+        path = 'analytics/metrics/virtualservice/' + uuid
         metrics = ['dns_client.avg_resp_type_a',
                    'dns_client.avg_resp_type_aaaa',
                    'dns_client.avg_resp_type_ns',
@@ -112,36 +115,25 @@ class Avi(object):
         self._get(path, params=params)
 
     def vs_inventory(self):
-        r = self._get('/api/virtualservice-inventory', params={'include_name': True, 'page_size': '1'})
+        r = self._get('virtualservice-inventory', params={'include_name': True, 'page_size': '50'})
 
     def network_inventory(self):
-        r = self._get('/api/network-inventory', params={'include_name': True})
+        r = self._get('network-inventory', params={'include_name': True, 'page_size': '50'})
 
     def alerts(self):
-        r = self._get('/api/alert')
+        r = self._get('alert', params={'include_name': True, 'page_size': '200'})
 
     def events(self):
-        r = self._get('/api/analytics/logs/', params={'include_name': True, 'type': '2', 'duration': '604800', 'page_size': '5000' })
+        r = self._get('analytics/logs/', params={'include_name': True, 'type': '2', 'duration': '604800', 'page_size': '1000' })
 
     def backup(self):
-        self.session.headers.update({'X-Avi-Tenant': 'admin'})
-        r = self._post('/api/configuration/export', params={'full_system': True}, data={'passphrase': self.password})
-        self.export = r.json()
-        self.session.headers.update({'X-Avi-Tenant': self.tenant})
-
-    def login(self):
-        login_data = {'username': self.username, 'password': self.password}
-        r = self._post('/login', data=login_data)
-        if r and 'AVI_API_VERSION' in r.headers.keys():
-            self.session.headers.update({'X-Avi-Version': self.avi_api_version})
-            self.session.headers.update({'X-Avi-Tenant': self.tenant})
-        else:
-            raise Exception('Failed authenticating as %s:%s with host %s' % (self.username, self.password, self.host))
+        r = self._get('configuration/export', params={'full_system': True, 'passphrase': self.password})
+        self.export = r
 
     def _find_cc_user(self, cloud=None):
         user = {}
         if cloud is not None:
-            uuid = self._get(cloud['oshiftk8s_configuration']['ssh_user_ref']).json()['results'][0]['uuid']
+            uuid = self._get(cloud['oshiftk8s_configuration']['ssh_user_ref'])['results'][0]['uuid']
 
             for ccu in self.export['CloudConnectorUser']:
                 if ccu['uuid'] == uuid:
@@ -150,81 +142,57 @@ class Avi(object):
         return user
 
     def _get_dns_vs(self):
-        ref = self.export['SystemConfiguration'][0]['dns_virtualservice_refs'][0]
-        self._dns_vs = self._get(ref, params={'include_name': True}).json()
+        ref = self.export['SystemConfiguration'][0]['dns_virtualservice_refs'][0].split('/')[-1]
+        self._dns_vs = self._get('virtualservice/' + ref, params={'include_name': True})
 
     def _cluster_runtime(self):
         ips = []
-        cluster = self._get('/api/cluster/runtime')
-        for node in cluster.json()['node_states']:
+        cluster = self._get('cluster/runtime')
+        for node in cluster['node_states']:
             ips.append(node['mgmt_ip'])
         return ips
 
     def _se_local_addresses(self, cloud_uuid=None):
         se_list = []
-        inventory = self._get('/api/serviceengine-inventory', params={'include_name': True, 'page_size': '200'})
-        securechannel = self._get('/api/securechannel')
-        for sc in securechannel.json()['results']:
-            for se in inventory.json()['results']:
+        inventory = self._get('serviceengine-inventory', params={'include_name': True, 'page_size': '200'})
+        securechannel = self._get('securechannel')
+        for sc in securechannel['results']:
+            for se in inventory['results']:
                 if sc['uuid'] == se['uuid'] and cloud_uuid in se['config']['cloud_ref']:
                     se_list.append(sc['local_ip'])
         return se_list
 
     def _ocp_connectors(self):
         cc_list = []
-        clouds = self._get('/api/cloud')
-        # for cloud in clouds.json()['results']:
+        clouds = self._get('cloud')
+        # for cloud in clouds['results']:
         for cloud in self.export['Cloud']:
             if cloud['vtype'] == 'CLOUD_OSHIFT_K8S':
                 cc_list.append(cloud)
         return cc_list
 
     def _get(self, uri, params=None):
-        url = self._url(uri)
-        return self._request('get', url, params=params)
+        r = self.api.get(uri, params=params)
+        page = 2
+        data = r.json()
+        print "Collecting", uri + "..."
+        while 'next' in r.json().keys():
+          params.update({'page': page})
+          r = self.api.get(uri, params=params)
+          data['results'].append(r.json()['results'])
+          page += 1
+        file_name = re.sub('\W+','-', uri) + '-avi_healthcheck.json'
+        print "Writing", file_name + "..."
+        self._write(file_name=file_name, data=data)
+        return data
 
-    def _post(self, uri, params=None, data=None):
-        if 'login' not in uri:
-            self.session.headers.update({'X-CSRFToken': self.session.cookies['csrftoken']})
-            self.session.headers.update({'Referer': self.base_url + '/' })
-        url = self._url(uri)
-        return self._request('post', url, params=params, data=data)
-
-    def _url(self, uri):
-        return self.base_url + uri
-
-    def _write(self, path, data):
+    def _write(self, file_name, data):
         try:
-            with open(self.output_dir + '/' + path, 'w') as fh:
+            with open(self.output_dir + '/' + file_name, 'w') as fh:
                 json.dump(data, fh)
         except Exception as e:
             print e.message
 
-    def _request(self, method, url, params=None, data=None):
-        _method = getattr(self.session, method)
-        r = _method(url, params=params, data=data)
-        print 'HTTP_REQUEST',r.status_code, method, url, params
-        try:
-            r.raise_for_status()
-        except Exception as e:
-            print e.message
-            return None
-        try:
-            data = r.json()
-            page = 2
-            while 'next' in r.json().keys():
-              params['page'] = str(page)
-              r = _method(url, params=params, data=data)
-              print 'HTTP_REQUEST',r.status_code, method, url, params
-              print r.json()
-              page += 1
-            m = re.match(self.base_url + '/(.*)', url)
-            path = m.group(1).replace('/', '-') + '-avi_healthcheck.json'
-            # TODO Enable write below
-            self._write(path, data)
-        except ValueError:
-            pass
-        return r
 
 
 class SSH_Base(object):
@@ -288,7 +256,6 @@ class SSH_Base(object):
                 sin.flush()
             cmd['response'] = sout.read()
         return cmd
-
 
 class AviController(SSH_Base):
     def __init__(self, local_ip, port=22, username='admin', password=None, controllers=None, output_dir=None):
@@ -406,13 +373,17 @@ class K8s(object):
         else:
             authorization_token = k8s_cloud['oshiftk8s_configuration']['service_account_token']
         self._kauth = kubernetes.client.Configuration()
-        self._kauth.host = 'https://' + k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
+        if 'https://' not in k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]:
+            host_url = 'https://' + k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
+        else:
+            host_url = k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
+        self._kauth.host = host_url
         self._kauth.verify_ssl = False
         self._kauth.api_key['authorization'] = authorization_token
         self._kauth.api_key_prefix['authorization'] = 'Bearer'
 
         self._oauth = kubernetes.client.Configuration()
-        self._oauth.host = 'https://' + k8s_cloud['oshiftk8s_configuration']['master_nodes'][0]
+        self._oauth.host = host_url
         self._oauth.verify_ssl = False
         self._oauth.api_key['authorization'] = authorization_token
         self._oauth.api_key_prefix['authorization'] = 'Bearer'
@@ -437,20 +408,20 @@ class K8s(object):
             print 'K8s exception with %s' % cmd
             print e
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--controller', type=str, default='127.0.0.1')
     parser.add_argument('--username', type=str, default='admin')
     parser.add_argument('--password', type=str, default=None)
-    parser.add_argument('--output', type=str, default=None, help='Output directory')
+    parser.add_argument('--output', type=str, default='.', help='Output directory')
     parser.add_argument('--api-version', type=str, default='17.2.14', help='X-Avi-Version' )
     parser.add_argument('--tenant', type=str, default='*', help='X-Avi-Tenant')
+    parser.add_argument('--timeout', type=float, default=300, help='REST API timeout')
     parser.add_argument('--secure_channel_port', type=int, default=5097)
     args = parser.parse_args()
 
     avi = Avi(host=args.controller, username=args.username, password=args.password,
-              output_dir=args.output, tenant=args.tenant, avi_api_version=args.api_version)
+              output_dir=args.output, tenant=args.tenant, avi_api_version=args.api_version, timeout=args.timeout)
 
     archive_name = args.output + '/' + args.controller + '-avi_healthcheck-' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + '.tar.gz'
 
