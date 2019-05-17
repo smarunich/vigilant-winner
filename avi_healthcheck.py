@@ -2,7 +2,6 @@
 import requests
 import re
 import json
-from itertools import chain
 from avi.sdk.avi_api import ApiSession
 import paramiko
 import kubernetes.client
@@ -12,9 +11,8 @@ import argparse
 import StringIO
 import tarfile
 import datetime
-import requests.packages.urllib3
 import getpass
-
+import requests.packages.urllib3
 requests.packages.urllib3.disable_warnings()
 
 from avi.util.ssl_utils import encrypt_string, decrypt_string
@@ -47,7 +45,6 @@ class Avi(object):
         self.tenant = tenant
         self.timeout = timeout
 
-        #self.login()
         self.api = ApiSession.get_session(controller_ip = self.host, username=self.username, password=self.password, tenant=self.tenant, api_version=self.avi_api_version, timeout=self.timeout)
 
         self.backup()
@@ -76,7 +73,7 @@ class Avi(object):
 
         self.archive()
 
-    def check_key_passphrase(self,config, passphrase):
+    def check_key_passphrase(self, config, passphrase):
         from django.contrib.auth.hashers import PBKDF2PasswordHasher as pbkdf2
         salt = config.get('META',{}).get('salt', None)
         hasher = pbkdf2()
@@ -137,12 +134,12 @@ class Avi(object):
     def _find_cc_user(self, cloud=None):
         user = {}
         if cloud is not None:
-            uuid = self._get(cloud['oshiftk8s_configuration']['ssh_user_ref'])['results'][0]['uuid']
-
+            cloudconnectoruser_ref = ''.join(cloud['oshiftk8s_configuration']['ssh_user_ref'].split('/')[-2:])
+            uuid = self._get(cloudconnectoruser_ref)['results'][0]['uuid']
             for ccu in self.export['CloudConnectorUser']:
                 if ccu['uuid'] == uuid:
                     user['username'] = ccu['name']
-                    user['pem'] = ccu['private_key']
+                    user['pem'] = decrypt_string(ccu['private_key'], self.private_key)
         return user
 
     def _get_dns_vs(self):
@@ -221,8 +218,6 @@ class SSH_Base(object):
         self.local_port = port
         self.username = username
         self.password = password
-
-
 
     def run_commands(self):
         response_list = []
@@ -381,7 +376,7 @@ class K8s(object):
     def __init__(self, k8s_cloud=None, private_key=None, output_dir=None):
         self.output_dir = output_dir
         if 'str' and 'iv' in k8s_cloud['oshiftk8s_configuration']['service_account_token']:
-            authorization_token = decrypt_string(k8s_cloud['oshiftk8s_configuration']['service_account_token'],private_key)
+            authorization_token = decrypt_string(k8s_cloud['oshiftk8s_configuration']['service_account_token'], private_key)
         else:
             authorization_token = k8s_cloud['oshiftk8s_configuration']['service_account_token']
         self._kauth = kubernetes.client.Configuration()

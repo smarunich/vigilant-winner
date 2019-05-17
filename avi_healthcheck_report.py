@@ -213,18 +213,8 @@ class Avi(object):
                 dns_vs = OrderedDict()
                 if 'analytics_policy' in vs.keys():
                     dns_vs.update({
-                    'udf_log': {
-                        'udf_log_throttle': vs['analytics_policy']['udf_log_throttle'],
-                        'enabled': vs['analytics_policy']['enabled']
-                        },
-                    # Non-Significant  Logs
-                    'non_significant_logs_enabled': vs['analytics_policy']['full_client_logs']['enabled']
+                    'analytics_policy': vs['analytics_policy']
                     })
-                # Real-Time Metrics
-                try:
-                    dns_vs['realtime_metrics_enabled'] = vs['analytics_policy']['metrics_realtime_update']['enabled']
-                except:
-                    dns_vs['realtime_metrics_enabled'] = False
                 applicationprofile_name = self._lookup_name_from_obj_ref(
                     vs['application_profile_ref'])
                 for applicationprofile_obj in self.config['ApplicationProfile']:
