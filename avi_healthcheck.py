@@ -13,6 +13,8 @@ import StringIO
 import tarfile
 import datetime
 import requests.packages.urllib3
+import getpass
+
 requests.packages.urllib3.disable_warnings()
 
 from avi.util.ssl_utils import encrypt_string, decrypt_string
@@ -71,6 +73,8 @@ class Avi(object):
 
         for c_ip in self.cl_list:
             self.ctrl_connections.append(AviController(c_ip, password=self.password, controllers=self.cl_list,output_dir=self.output_dir))
+
+        self.archive()
 
     def check_key_passphrase(self,config, passphrase):
         from django.contrib.auth.hashers import PBKDF2PasswordHasher as pbkdf2
@@ -193,7 +197,15 @@ class Avi(object):
         except Exception as e:
             print e.message
 
-
+    def archive(self):
+        archive_name = self.output_dir + '/' + self.host + '-avi_healthcheck-' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + '.tar.gz'
+        with tarfile.open(archive_name, mode='w:gz') as archive:
+            for root, dirs, files in os.walk(self.output_dir):
+                for file in files:
+                    if 'avi_healthcheck.json' in file:
+                        archive.add(os.path.join(root, file))
+                        os.remove(os.path.join(root, file))
+        os.chmod(archive_name, 0755)
 
 class SSH_Base(object):
     def __init__(self, port=22, username=None, password=None, pem=None, output_dir=None):
@@ -410,25 +422,23 @@ class K8s(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--controller', type=str, default='127.0.0.1')
+    parser.add_argument('--controller', type=str, default=None)
     parser.add_argument('--username', type=str, default='admin')
     parser.add_argument('--password', type=str, default=None)
-    parser.add_argument('--output', type=str, default='.', help='Output directory')
+    parser.add_argument('--output_dir', type=str, default='.', help='Output directory')
     parser.add_argument('--api-version', type=str, default='17.2.14', help='X-Avi-Version' )
     parser.add_argument('--tenant', type=str, default='*', help='X-Avi-Tenant')
     parser.add_argument('--timeout', type=float, default=300, help='REST API timeout')
     parser.add_argument('--secure_channel_port', type=int, default=5097)
     args = parser.parse_args()
 
-    avi = Avi(host=args.controller, username=args.username, password=args.password,
-              output_dir=args.output, tenant=args.tenant, avi_api_version=args.api_version, timeout=args.timeout)
-
-    archive_name = args.output + '/' + args.controller + '-avi_healthcheck-' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + '.tar.gz'
-
-    with tarfile.open(archive_name, mode='w:gz') as archive:
-      for root, dirs, files in os.walk(args.output):
-          for file in files:
-            if 'avi_healthcheck.json' in file:
-                archive.add(os.path.join(root, file))
-                os.remove(os.path.join(root, file))
-    os.chmod(archive_name, 0755)
+    if args.controller:
+        avi = Avi(host=args.controller, username=args.username, password=args.password,
+          output_dir=args.output_dir, tenant=args.tenant, avi_api_version=args.api_version, timeout=args.timeout)
+    else:
+        host = raw_input("Controller IP: ")
+        username = raw_input("Username: ")
+        password = getpass.getpass('Password: ')
+        output_dir = raw_input("Output Directory: ")
+        avi_api_version = raw_input("Avi Vantage version: ")
+        avi = Avi(host=host, username=username, password=password, output_dir=output_dir, avi_api_version=avi_api_version)
